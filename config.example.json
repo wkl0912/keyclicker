@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "toggle_vk": 120,
+  "debounce_ms": 180,
+  "move_delay_ms": 20,
+  "restore_cursor": true,
+  "show_marker": true,
+  "use_absolute": false,
+  "swallow": false,
+  "first_run": false,
+  "panel": {
+    "visible": false,
+    "x": 120,
+    "y": 160
+  },
+  "mappings": [
+    {
+      "vk": 49,
+      "x": 1000,
+      "y": 800,
+      "button": "left",
+      "double": false,
+      "label": "示例：按 1 点击 (1000, 800)"
+    }
+  ]
+}
