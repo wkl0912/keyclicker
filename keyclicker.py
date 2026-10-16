@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-键鼠映射器 KeyClicker  v1.1
+键鼠映射器 KeyClicker  v1.4
 ================================================================
 作用：把键盘按键映射成「在屏幕指定坐标执行一次鼠标单击」，
       并提供一个可拖动的屏幕悬浮按钮面板（点按钮 = 在该坐标单击一次）。
+
+v1.4 新增：界面尺寸可调 ——
+      「悬浮按钮」大小 0.5~2.0 倍（面板按钮压在 HUD 密集区嫌大时缩小它），
+      「拖动标记」边长 16~96 px（拖动定位的准星，同时是拖拽热区）。
+      主界面底部有两组 − / ＋ 按钮，改动即时生效并写入 config.json。
 
 快速上手（三步）：
   1) 点【＋ 添加映射】新增一行
@@ -35,7 +40,7 @@ from tkinter import filedialog, messagebox, ttk
 # 0. 常量与路径
 # =====================================================================
 APP_NAME = '键鼠映射器'
-APP_VERSION = '1.3'
+APP_VERSION = '1.4'
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, 'config.json')
@@ -299,6 +304,12 @@ def vk_name(vk):
 # =====================================================================
 # 3. 配置
 # =====================================================================
+# 尺寸调节范围：悬浮按钮整体倍率 / 拖动标记边长（逻辑像素）
+BUTTON_SCALE_MIN, BUTTON_SCALE_MAX, BUTTON_SCALE_STEP = 0.5, 2.0, 0.1
+MARK_SIZE_MIN, MARK_SIZE_MAX, MARK_SIZE_STEP = 16, 96, 4
+BUTTON_SCALE_DEFAULT = 1.0
+MARK_SIZE_DEFAULT = 38
+
 DEFAULT_CONFIG = {
     'enabled': True,
     'toggle_vk': 0x78,          # F9
@@ -308,6 +319,8 @@ DEFAULT_CONFIG = {
     'show_marker': True,        # 点击处闪一个圆环
     'use_absolute': False,      # 用绝对坐标注入（个别游戏需要）
     'swallow': False,           # 拦截已映射按键，不再传给系统
+    'button_scale': BUTTON_SCALE_DEFAULT,   # 悬浮按钮大小倍率（0.5~2.0）
+    'mark_size': MARK_SIZE_DEFAULT,         # 拖动定位准星边长（16~96 px）
     'first_run': True,
     'panel': {'visible': False, 'x': 120, 'y': 160},
     'mappings': [],
@@ -490,6 +503,7 @@ class KeyboardHook:
 class App:
     def __init__(self):
         self.cfg = load_config()
+        self._clamp_sizes()
         self.ui_queue = queue.Queue()
         self.capture_vk_target = None
         self.last_fire = {}
@@ -537,6 +551,37 @@ class App:
             dpi = 96.0
         SCALE = max(1.0, min(3.0, dpi / 96.0))
 
+    def _sf(self, base, s):
+        """按倍率 s 生成同族字体（字号随之缩放，最小 6pt）。"""
+        try:
+            fam, sz = base[0], base[1]
+            style = base[2] if len(base) > 2 else ''
+            nsz = max(6, int(round(sz * s)))
+            return (fam, nsz, style) if style else (fam, nsz)
+        except Exception:
+            return base
+
+    def _clamp_sizes(self):
+        """把配置里的尺寸值收进合法区间（配置可能被手改过）。"""
+        self.cfg['button_scale'] = self._clamp_button_scale(
+            self.cfg.get('button_scale', BUTTON_SCALE_DEFAULT))
+        self.cfg['mark_size'] = self._clamp_mark_size(
+            self.cfg.get('mark_size', MARK_SIZE_DEFAULT))
+
+    @staticmethod
+    def _clamp_button_scale(v):
+        try:
+            return max(BUTTON_SCALE_MIN, min(BUTTON_SCALE_MAX, round(float(v), 2)))
+        except Exception:
+            return BUTTON_SCALE_DEFAULT
+
+    @staticmethod
+    def _clamp_mark_size(v):
+        try:
+            return int(max(MARK_SIZE_MIN, min(MARK_SIZE_MAX, int(round(float(v))))))
+        except Exception:
+            return MARK_SIZE_DEFAULT
+
     def _apply_fonts(self):
         fam = 'Microsoft YaHei UI'
         self.F = (fam, 9)
@@ -556,7 +601,7 @@ class App:
 
     def _center_window(self):
         self.root.update_idletasks()
-        w, h = px(560), px(570)
+        w, h = px(560), px(620)
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x = max(0, (sw - w) // 2)
         y = max(0, (sh - h) // 3)
@@ -647,16 +692,43 @@ class App:
         self._btn(row3, '导入配置', self.import_cfg).pack(side='left', padx=px(6))
         self._btn(row3, '打开目录', self.open_dir).pack(side='left')
 
+        # ---- 尺寸调节（v1.4 新增）
+        row4 = tk.Frame(bottom, bg=C_BG)
+        row4.pack(fill='x', pady=(0, px(4)))
+        tk.Label(row4, text='悬浮按钮', bg=C_BG, fg=C_TEXT, font=self.F_S).pack(side='left')
+        self._btn(row4, '−', lambda: self.nudge_button_scale(-BUTTON_SCALE_STEP),
+                  padx=px(5), takefocus=0).pack(side='left', padx=(px(4), 0))
+        self.lbl_button_scale = tk.Label(row4, text='100%', bg=C_BG, fg=C_ACCENT,
+                                         font=self.F_B, width=5)
+        self.lbl_button_scale.pack(side='left')
+        self._btn(row4, '＋', lambda: self.nudge_button_scale(+BUTTON_SCALE_STEP),
+                  padx=px(5), takefocus=0).pack(side='left')
+        tk.Label(row4, text='拖动标记', bg=C_BG, fg=C_TEXT, font=self.F_S
+                 ).pack(side='left', padx=(px(16), 0))
+        self._btn(row4, '−', lambda: self.nudge_mark_size(-MARK_SIZE_STEP),
+                  padx=px(5), takefocus=0).pack(side='left', padx=(px(4), 0))
+        self.lbl_mark_size = tk.Label(row4, text=str(MARK_SIZE_DEFAULT), bg=C_BG,
+                                      fg=C_ACCENT, font=self.F_B, width=3)
+        self.lbl_mark_size.pack(side='left')
+        self._btn(row4, '＋', lambda: self.nudge_mark_size(+MARK_SIZE_STEP),
+                  padx=px(5), takefocus=0).pack(side='left')
+        self._btn(row4, '重置', self.reset_sizes).pack(side='left', padx=(px(10), 0))
+        self._refresh_size_labels()
+
         tk.Label(self.root, bg=C_BG, fg=C_WARN, font=self.F_S, justify='left',
                  wraplength=px(530), anchor='w',
                  text='⚠ 本工具执行全局键鼠注入。联机竞技游戏（BattlEye / EAC / VAC）'
                       '可能判定为违规，请自行评估风险。'
                  ).pack(fill='x', padx=px(12), pady=(0, px(8)))
 
-    def _btn(self, parent, text, cmd, bg=C_CARD, fg=C_TEXT):
-        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, font=self.F,
+    def _btn(self, parent, text, cmd, bg=C_CARD, fg=C_TEXT, **kw):
+        kw.setdefault('font', self.F)
+        kw.setdefault('padx', px(8))
+        kw.setdefault('pady', px(2))
+        kw.setdefault('takefocus', 0)
+        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
                          relief='solid', bd=1, cursor='hand2',
-                         padx=px(8), pady=px(2), activebackground=C_SOFT)
+                         activebackground=C_SOFT, **kw)
 
     def _on_wheel(self, event):
         try:
@@ -689,6 +761,57 @@ class App:
         self.cfg['swallow'] = bool(self.var_swallow.get())
         self.var_debounce.set(str(self.cfg['debounce_ms']))
         save_config(self.cfg)
+
+    # ---------------------------------------------------------------- 尺寸调节
+    def _refresh_size_labels(self):
+        try:
+            self.lbl_button_scale.config(
+                text='%d%%' % int(round(self.cfg['button_scale'] * 100)))
+            self.lbl_mark_size.config(text=str(int(self.cfg['mark_size'])))
+        except Exception:
+            pass
+
+    def nudge_button_scale(self, delta):
+        """调节悬浮按钮大小倍率，到边界后不动。"""
+        v = self._clamp_button_scale(self.cfg['button_scale'] + delta)
+        if abs(v - self.cfg['button_scale']) < 1e-9:
+            return
+        self.cfg['button_scale'] = v
+        self.apply_sizes()
+
+    def nudge_mark_size(self, delta):
+        """调节拖动标记边长（像素），到边界后不动。"""
+        v = self._clamp_mark_size(self.cfg['mark_size'] + delta)
+        if v == self.cfg['mark_size']:
+            return
+        self.cfg['mark_size'] = v
+        self.apply_sizes()
+
+    def reset_sizes(self):
+        if (self.cfg['button_scale'] == BUTTON_SCALE_DEFAULT
+                and self.cfg['mark_size'] == MARK_SIZE_DEFAULT):
+            return
+        self.cfg['button_scale'] = BUTTON_SCALE_DEFAULT
+        self.cfg['mark_size'] = MARK_SIZE_DEFAULT
+        self.apply_sizes()
+
+    def apply_sizes(self):
+        """尺寸变更后：存盘 + 刷新数值 + 重建悬浮面板（立即生效）。"""
+        self._clamp_sizes()
+        self._refresh_size_labels()
+        save_config(self.cfg)
+        self.rebuild_panel()
+
+    def rebuild_panel(self):
+        """面板是按旧尺寸布局出来的，尺寸变了直接重建最省心。"""
+        if self.panel_win is not None:
+            try:
+                self.panel_win.destroy()
+            except Exception:
+                pass
+            self.panel_win = None
+            self.panel_body = None
+        self.refresh_panel()
 
     def toggle_enabled(self):
         self.cfg['enabled'] = not self.cfg['enabled']
@@ -900,7 +1023,7 @@ class App:
 
     def _create_mark(self, idx):
         mp = self.cfg['mappings'][idx]
-        cw = px(38)                                   # 十字准星画布边长
+        cw = px(int(self.cfg['mark_size']))            # 十字准星画布边长（可调）
         w = tk.Toplevel(self.root)
         w.overrideredirect(True)
         w.attributes('-topmost', True)
@@ -980,7 +1103,8 @@ class App:
         h.geometry('+%d+%d' % (vx + (vw - h.winfo_reqwidth()) // 2, vy + px(16)))
         set_ex_style(h, WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
         self.drag_hint = h
-        self.drag_hint_lbl.config(text='%d 个标记' % len(self.drag_marks))
+        self.drag_hint_lbl.config(text='%d 个标记 · 标记 %dpx'
+                                       % (len(self.drag_marks), int(self.cfg['mark_size'])))
 
     def _update_drag_hint(self, idx, x, y):
         if self.drag_hint_lbl is None:
@@ -1221,13 +1345,17 @@ class App:
         w.configure(bg=C_CARD)
         w.geometry('+%d+%d' % (self.cfg['panel']['x'], self.cfg['panel']['y']))
 
+        s = self.cfg['button_scale']
         head = tk.Frame(w, bg='#e9edf5', cursor='fleur')
         head.pack(fill='x')
         tk.Label(head, text='≡ 悬浮按钮（拖这里移动）', bg='#e9edf5', fg=C_MUTED,
-                 font=self.F_S, cursor='fleur').pack(side='left', padx=px(8), pady=px(3))
+                 font=self._sf(self.F_S, s), cursor='fleur'
+                 ).pack(side='left', padx=max(2, px(int(round(8 * s)))),
+                        pady=max(0, px(int(round(3 * s)))))
         tk.Button(head, text='✕', bg='#e9edf5', fg=C_DANGER, relief='flat', bd=0,
-                  font=self.F_S, cursor='hand2',
-                  command=self.toggle_panel).pack(side='right', padx=px(4))
+                  font=self._sf(self.F_S, s), cursor='hand2',
+                  command=self.toggle_panel
+                  ).pack(side='right', padx=max(2, px(int(round(4 * s)))))
 
         body = tk.Frame(w, bg=C_CARD, highlightbackground=C_LINE, highlightthickness=1)
         body.pack(fill='both', expand=True)
@@ -1254,20 +1382,30 @@ class App:
     def _fill_panel(self):
         for c in self.panel_body.winfo_children():
             c.destroy()
+        s = self.cfg['button_scale']
         if not self.cfg['mappings']:
             tk.Label(self.panel_body, text='（无映射）', bg=C_CARD, fg=C_MUTED,
-                     font=self.F_S).pack(padx=px(14), pady=px(8))
+                     font=self._sf(self.F_S, s)).pack(padx=max(4, px(int(round(14 * s)))),
+                                                      pady=max(2, px(int(round(8 * s)))))
             return
+        fnt = self._sf(self.F_B, s)
+        pad_x = max(3, px(int(round(10 * s))))
+        pad_y = max(0, px(int(round(5 * s))))
+        gap_x = max(2, px(int(round(6 * s))))
+        gap_y = max(0, px(int(round(3 * s))))
+        # 字符宽度只在「缩小」时跟着收；放大只让字号变大，
+        # 否则字符宽 × 字号会产生平方级膨胀（2.0 倍时面板宽到 840px 以上）。
+        width = max(4, int(round(16 * min(1.0, s))))
         for mp in self.cfg['mappings']:
             txt = vk_name(mp['vk'])
             if mp.get('label'):
                 txt += '  ' + mp['label']
-            tk.Button(self.panel_body, text=txt, font=self.F_B, bg=C_SOFT,
+            tk.Button(self.panel_body, text=txt, font=fnt, bg=C_SOFT,
                       fg=C_ACCENT if self.cfg['enabled'] else C_MUTED,
                       activebackground='#dfe7ff', relief='flat', cursor='hand2',
-                      anchor='w', padx=px(10), pady=px(5), width=16,
+                      anchor='w', padx=pad_x, pady=pad_y, width=width,
                       command=lambda m=dict(mp): self.perform(m)
-                      ).pack(fill='x', padx=px(6), pady=px(3))
+                      ).pack(fill='x', padx=gap_x, pady=gap_y)
 
     # ---------------------------------------------------------------- 导入导出
     def export_cfg(self):
@@ -1291,14 +1429,16 @@ class App:
             with open(p, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.cfg = deep_merge(DEFAULT_CONFIG, data)
+            self._clamp_sizes()
             self.var_debounce.set(str(self.cfg['debounce_ms']))
             self.var_marker.set(bool(self.cfg['show_marker']))
             self.var_restore.set(bool(self.cfg['restore_cursor']))
             self.var_swallow.set(bool(self.cfg['swallow']))
             self.btn_toggle_key.config(text=vk_name(self.cfg['toggle_vk']))
+            self._refresh_size_labels()
             self.refresh_rows()
             self.refresh_status()
-            self.refresh_panel()
+            self.rebuild_panel()
             save_config(self.cfg)
             messagebox.showinfo(APP_NAME, '导入成功')
         except Exception as e:
@@ -1326,6 +1466,7 @@ class App:
             '· 坐标按钮上点右键 = 老式 3 秒光标拾取（全屏游戏里拖不动时用）\n'
             '· 按 %s 可随时全局启用/停用（紧急停用）\n'
             '· 点【显示/隐藏悬浮按钮】得到屏幕上可点的按钮面板\n'
+            '· 底部【悬浮按钮 / 拖动标记】两组 − ＋ 可调大小，面板挡视线就调小\n'
             '· 配置自动保存在同目录 config.json'
             % vk_name(self.cfg['toggle_vk']))
 

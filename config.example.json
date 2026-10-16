@@ -7,6 +7,8 @@
   "show_marker": true,
   "use_absolute": false,
   "swallow": false,
+  "button_scale": 1.0,
+  "mark_size": 38,
   "first_run": false,
   "panel": {
     "visible": false,
