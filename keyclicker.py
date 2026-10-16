@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-键鼠映射器 KeyClicker  v1.4
+键鼠映射器 KeyClicker  v1.5
 ================================================================
 作用：把键盘按键映射成「在屏幕指定坐标执行一次鼠标单击」，
       并提供一个可拖动的屏幕悬浮按钮面板（点按钮 = 在该坐标单击一次）。
 
 v1.4 新增：界面尺寸可调 ——
       「悬浮按钮」大小 0.5~2.0 倍（面板按钮压在 HUD 密集区嫌大时缩小它），
-      「拖动标记」边长 16~96 px（拖动定位的准星，同时是拖拽热区）。
+      「拖动标记」边长 12~96 px（拖动定位的准星，同时是拖拽热区）。
       主界面底部有两组 − / ＋ 按钮，改动即时生效并写入 config.json。
+
+v1.5 修正：拖动标记的「触发面积」以前不等于你设的尺寸 ——
+      窗口 = 准星画布 + 下方的键名标签 + 2px 外框，所以设 16px 时
+      真实的可拖拽区域其实有 50 多像素。现在标记就是「一个 mark_size×mark_size
+      的方块」，外框画在画布内部、键名画在画布里面，看到多大 = 触发就多大。
+      尺寸不足放键名时会自动省略键名，鼠标悬停可在顶部提示条看到是哪一条。
+      同时：钩子对同一次物理按压做去重（避免 KEYDOWN/SYSKEYDOWN 双投递导致重复触发）。
 
 快速上手（三步）：
   1) 点【＋ 添加映射】新增一行
@@ -40,7 +47,7 @@ from tkinter import filedialog, messagebox, ttk
 # 0. 常量与路径
 # =====================================================================
 APP_NAME = '键鼠映射器'
-APP_VERSION = '1.4'
+APP_VERSION = '1.5'
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, 'config.json')
@@ -306,7 +313,7 @@ def vk_name(vk):
 # =====================================================================
 # 尺寸调节范围：悬浮按钮整体倍率 / 拖动标记边长（逻辑像素）
 BUTTON_SCALE_MIN, BUTTON_SCALE_MAX, BUTTON_SCALE_STEP = 0.5, 2.0, 0.1
-MARK_SIZE_MIN, MARK_SIZE_MAX, MARK_SIZE_STEP = 16, 96, 4
+MARK_SIZE_MIN, MARK_SIZE_MAX, MARK_SIZE_STEP = 12, 96, 4
 BUTTON_SCALE_DEFAULT = 1.0
 MARK_SIZE_DEFAULT = 38
 
@@ -456,13 +463,23 @@ class KeyboardHook:
         self._hook = None
         self._proc = HOOKPROC(self._hook_proc)   # 必须持引用，否则 GC 后崩溃
         self._running = False
+        # 上一次处理的按键签名，用于丢弃同一次物理按压的重复投递
+        self._last_sig = None
 
     def _hook_proc(self, n_code, w_param, l_param):
         if n_code == HC_ACTION:
             try:
                 if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
                     kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                    if self._on_key(int(kb.vkCode)):
+                    vk = int(kb.vkCode)
+                    # Windows 对同一次物理按压可能同时投递 KEYDOWN 与 SYSKEYDOWN，
+                    # 两者的 (vk, 时间戳, 标志位) 完全相同 —— 只认一次，
+                    # 否则一次按压会触发两次映射。自动重复的时间戳不同，不受影响。
+                    sig = (vk, int(kb.time), int(kb.flags))
+                    if sig == self._last_sig:
+                        return user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    self._last_sig = sig
+                    if self._on_key(vk):
                         return 1
             except Exception:
                 log_error('钩子回调异常')
@@ -674,7 +691,7 @@ class App:
         self.var_swallow = tk.BooleanVar(value=self.cfg['swallow'])
         for txt, var in (('点击标记', self.var_marker),
                          ('还原光标', self.var_restore),
-                         ('拦截按键', self.var_swallow)):
+                         ('吞掉按键', self.var_swallow)):
             tk.Checkbutton(row2, text=txt, variable=var, command=self.apply_opts,
                            bg=C_BG, fg=C_TEXT, font=self.F_S, activebackground=C_BG,
                            selectcolor=C_CARD, bd=0, highlightthickness=0
@@ -1023,28 +1040,38 @@ class App:
 
     def _create_mark(self, idx):
         mp = self.cfg['mappings'][idx]
-        cw = px(int(self.cfg['mark_size']))            # 十字准星画布边长（可调）
+        # 标记边长 = 真实触发面积。外框和键名都画在画布「内部」，
+        # 所以「看到多大 = 能拖多大」，不会再被键名标签和外框额外撑大。
+        cw = max(px(10), px(int(self.cfg['mark_size'])))
         w = tk.Toplevel(self.root)
         w.overrideredirect(True)
         w.attributes('-topmost', True)
         w.configure(bg=C_CARD)
-        box = tk.Frame(w, bg=C_CARD, highlightbackground=C_ACCENT,
-                       highlightthickness=max(1, px(2)), cursor='fleur')
-        box.pack()
-        cv = tk.Canvas(box, width=cw, height=cw, bg='#eaf0ff', highlightthickness=0,
+        cv = tk.Canvas(w, width=cw, height=cw, bg='#eaf0ff', highlightthickness=0,
                        cursor='fleur')
         cv.pack()
-        c = cw / 2.0
-        cv.create_oval(c - cw * 0.34, c - cw * 0.34, c + cw * 0.34, c + cw * 0.34,
-                       outline=C_ACCENT, width=max(1, px(2)))
-        cv.create_line(c, c - cw * 0.24, c, c + cw * 0.24, fill=C_ACCENT,
-                       width=max(1, px(2)))
-        cv.create_line(c - cw * 0.24, c, c + cw * 0.24, c, fill=C_ACCENT,
-                       width=max(1, px(2)))
+
         name = vk_name(mp['vk'])
-        lbl = tk.Label(box, text=name, bg=C_CARD, fg=C_ACCENT, font=self.F_S,
-                       cursor='fleur', padx=px(3))
-        lbl.pack(fill='x')
+        show_name = cw >= px(30)          # 太小就只留准星，键名走悬停提示
+
+        def draw(bg, brd):
+            cv.configure(bg=bg)
+            cv.delete('all')
+            cv.create_rectangle(0, 0, cw - 1, cw - 1, outline=brd, width=max(1, px(1)))
+            top = cw * 0.58 if show_name else cw
+            if show_name:
+                pt = max(6, min(16, int(round(self.cfg['mark_size'] * 0.24))))
+                cv.create_text(cw / 2.0, cw * 0.74, text=name, fill=brd,
+                               font=(self.F_S[0], pt))
+            cx, cy = cw / 2.0, top / 2.0
+            r = max(3.0, top * 0.35)
+            arm = r * 0.55
+            cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline=brd,
+                           width=max(1, px(2)))
+            cv.create_line(cx, cy - arm, cx, cy + arm, fill=brd, width=max(1, px(2)))
+            cv.create_line(cx - arm, cy, cx + arm, cy, fill=brd, width=max(1, px(2)))
+
+        draw('#eaf0ff', C_ACCENT)
         w.update_idletasks()
 
         x, y = clamp_to_virtual(mp['x'], mp['y'])
@@ -1054,8 +1081,7 @@ class App:
             win._dx = e.x_root - win.winfo_x()
             win._dy = e.y_root - win.winfo_y()
             self.drag_focus = idx
-            box.configure(highlightbackground=C_OK)
-            cv.configure(bg='#d7f0e0')
+            draw('#d7f0e0', C_OK)
             self._update_drag_hint(idx, self.cfg['mappings'][idx]['x'],
                                    self.cfg['mappings'][idx]['y'])
             win.lift()
@@ -1070,19 +1096,22 @@ class App:
             self._update_drag_hint(idx, cx, cy)
 
         def on_release(e):
-            box.configure(highlightbackground=C_ACCENT)
-            cv.configure(bg='#eaf0ff')
+            draw('#eaf0ff', C_ACCENT)
             self._sync_row_coord(idx)
             save_config(self.cfg)
 
-        for wid in (box, cv, lbl):
-            wid.bind('<Button-1>', on_press)
-            wid.bind('<B1-Motion>', on_motion)
-            wid.bind('<ButtonRelease-1>', on_release)
+        # 只绑画布：触发面积 == 标记的可见面积，一个像素都不多
+        cv.bind('<Button-1>', on_press)
+        cv.bind('<B1-Motion>', on_motion)
+        cv.bind('<ButtonRelease-1>', on_release)
+        # 标记太小时不画键名，靠悬停辨认是哪一条
+        cv.bind('<Enter>', lambda e, i=idx: self._update_drag_hint(
+            i, self.cfg['mappings'][i]['x'], self.cfg['mappings'][i]['y']))
+        cv.bind('<Leave>', lambda e: self._reset_drag_hint())
 
         # 不抢焦点：拖动时不会打断你正在用的程序
         set_ex_style(w, WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-        self.drag_marks.append({'win': w, 'cv': cv, 'lbl': lbl, 'cw': cw, 'idx': idx})
+        self.drag_marks.append({'win': w, 'cv': cv, 'lbl': None, 'cw': cw, 'idx': idx})
 
     def _show_drag_hint(self):
         h = tk.Toplevel(self.root)
@@ -1103,8 +1132,18 @@ class App:
         h.geometry('+%d+%d' % (vx + (vw - h.winfo_reqwidth()) // 2, vy + px(16)))
         set_ex_style(h, WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
         self.drag_hint = h
-        self.drag_hint_lbl.config(text='%d 个标记 · 标记 %dpx'
-                                       % (len(self.drag_marks), int(self.cfg['mark_size'])))
+        self._reset_drag_hint()
+
+    def _reset_drag_hint(self):
+        """顶部提示条恢复成「标记总数 + 当前尺寸」。"""
+        if self.drag_hint_lbl is None:
+            return
+        try:
+            self.drag_hint_lbl.config(
+                text='%d 个标记 · 标记 %dpx'
+                     % (len(self.drag_marks), int(self.cfg['mark_size'])))
+        except Exception:
+            pass
 
     def _update_drag_hint(self, idx, x, y):
         if self.drag_hint_lbl is None:

@@ -6,7 +6,7 @@
   "restore_cursor": true,
   "show_marker": true,
   "use_absolute": false,
-  "swallow": false,
+  "swallow": true,
   "button_scale": 1.0,
   "mark_size": 38,
   "first_run": false,
